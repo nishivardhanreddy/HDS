@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local env/secrets
+.env
+.env.*
+
+# Large local datasets not suitable for GitHub
+2011.csv
+2012.csv
+2013.csv
+2014.csv
+2015.csv
+
+# Training artifacts (large/binary)
+artifacts/models/
+artifacts/encoders/
+artifacts/*.joblib
+
+# Optional runtime outputs
+*.log
+
