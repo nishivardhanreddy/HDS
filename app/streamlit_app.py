@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from data.data_loader import load_symptom_dataset, load_symptom_reference_tables
 from engine.prediction_engine import PredictionEngine
-from engine.risk_scoring import classify_risk, compute_health_risk_score, preventive_recommendations
+from engine.risk_scoring import classify_risk, compute_health_risk_score
 
 
 st.set_page_config(page_title="Context-Aware Disease Prediction", layout="wide")
@@ -21,7 +21,7 @@ st.set_page_config(page_title="Context-Aware Disease Prediction", layout="wide")
 
 @st.cache_resource
 def get_engine() -> PredictionEngine:
-    return PredictionEngine(model_dir="artifacts/models")
+    return PredictionEngine()
 
 
 @st.cache_data
@@ -50,6 +50,27 @@ def _bool_to_binary(value: bool) -> int:
 def _smoking_label_to_code(label: str) -> float:
     mapping = {"Never": 0.0, "Former": 1.0, "Current": 2.0}
     return mapping[label]
+
+
+AGE_GROUP_LABELS = [
+    "18-24 (younger)",
+    "25-29",
+    "30-34",
+    "35-39",
+    "40-44",
+    "45-49",
+    "50-54",
+    "55-59",
+    "60-64",
+    "65-69",
+    "70-74",
+    "75-79",
+    "80+ (older)",
+]
+
+
+def _age_group_label_to_code(label: str) -> int:
+    return AGE_GROUP_LABELS.index(label) + 1
 
 
 def main() -> None:
@@ -85,13 +106,13 @@ def main() -> None:
         hypertension_history = st.checkbox("Have you ever been told you have high blood pressure?", value=False)
         diabetes_history = st.checkbox("Have you ever been told you have diabetes?", value=False)
         heart_disease_history = st.checkbox("Do you have a history of heart disease?", value=False)
-        age_group = st.slider(
+        age_group_label = st.select_slider(
             "Age group (younger to older)",
-            min_value=1,
-            max_value=13,
-            value=6,
-            help="A grouped age scale used by the lifestyle model.",
+            options=AGE_GROUP_LABELS,
+            value="45-49",
+            help="Used as grouped age input for the lifestyle risk model.",
         )
+        age_group = _age_group_label_to_code(age_group_label)
         gender = st.selectbox("Gender", ["Male", "Female"])
 
     with col2:
@@ -228,9 +249,8 @@ def main() -> None:
     }
 
     result = engine.predict(payload)
-    rule_score, rule_risk_factors = compute_health_risk_score(payload["lifestyle"], payload["history"])
+    rule_score, _ = compute_health_risk_score(payload["lifestyle"], payload["history"])
     rule_level = classify_risk(rule_score)
-    recommendations = preventive_recommendations(rule_risk_factors)
 
     st.subheader("Prediction Dashboard")
     top_col1, top_col2, top_col3 = st.columns(3)
@@ -243,10 +263,13 @@ def main() -> None:
 
     rows = []
     for pred in result["predictions"]:
+        prediction_text = pred["prediction"]
+        if pred["model"] == "symptom" and pred.get("predicted_labels"):
+            prediction_text = ", ".join(pred["predicted_labels"])
         rows.append(
             {
                 "Model": pred["model"],
-                "Prediction": pred["prediction"],
+                "Prediction": prediction_text,
                 "Probability": f"{pred['probability']:.2%}",
             }
         )
@@ -265,24 +288,21 @@ def main() -> None:
 
     if symptoms and any(p["model"] == "symptom" for p in result["predictions"]):
         symptom_prediction = next(p for p in result["predictions"] if p["model"] == "symptom")
-        disease_name = symptom_prediction["prediction"]
+        predicted_diseases = symptom_prediction.get("predicted_labels") or [symptom_prediction["prediction"]]
         st.subheader("Disease Information")
-        desc_row = descriptions_df[descriptions_df["Disease"] == disease_name]
-        if not desc_row.empty:
-            st.write(desc_row.iloc[0]["Description"])
-        precaution_row = precautions_df[precautions_df["Disease"] == disease_name]
-        if not precaution_row.empty:
-            precautions = [str(precaution_row.iloc[0][c]) for c in precaution_row.columns if c.startswith("Precaution_")]
-            precautions = [p for p in precautions if p and p.lower() != "nan"]
-            if precautions:
-                st.write("Recommended precautions:")
-                for p in precautions:
-                    st.write(f"- {p}")
-
-    st.subheader("Preventive Recommendations")
-    for rec in recommendations:
-        st.write(f"- {rec}")
-
+        for disease_name in predicted_diseases:
+            st.markdown(f"**{disease_name}**")
+            desc_row = descriptions_df[descriptions_df["Disease"] == disease_name]
+            if not desc_row.empty:
+                st.write(desc_row.iloc[0]["Description"])
+            precaution_row = precautions_df[precautions_df["Disease"] == disease_name]
+            if not precaution_row.empty:
+                precautions = [str(precaution_row.iloc[0][c]) for c in precaution_row.columns if c.startswith("Precaution_")]
+                precautions = [p for p in precautions if p and p.lower() != "nan"]
+                if precautions:
+                    st.write("Recommended precautions:")
+                    for p in precautions:
+                        st.write(f"- {p}")
 
 if __name__ == "__main__":
     main()

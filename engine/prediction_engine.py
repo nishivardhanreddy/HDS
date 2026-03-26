@@ -11,13 +11,14 @@ from data.feature_engineering import build_symptom_documents
 from engine.context_builder import build_context
 from engine.explainability import explain_symptom_prediction, explain_tree_model_prediction
 from engine.model_selector import select_models
+from models.common import get_model_path
 
 
 class PredictionEngine:
     """Context-aware model execution with multi-modal prediction fusion."""
 
-    def __init__(self, model_dir: str | Path = "artifacts/models"):
-        self.model_dir = Path(model_dir)
+    def __init__(self, model_dir: str | Path | None = None):
+        self.model_dir = Path(model_dir) if model_dir is not None else None
         self.artifacts = self._load_artifacts()
         self.extension_models: dict[str, Callable] = {}
 
@@ -37,9 +38,9 @@ class PredictionEngine:
         }
         loaded: dict[str, dict] = {}
         for key, filename in artifact_files.items():
-            path = self.model_dir / filename
+            path = self.model_dir / filename if self.model_dir is not None else Path(get_model_path(filename))
             if path.exists():
-                loaded[key] = joblib.load(path)
+                loaded[key] = joblib.load(str(path))
         return loaded
 
     def available_models(self) -> list[str]:
@@ -88,29 +89,61 @@ class PredictionEngine:
 
     def _predict_symptom(self, payload: dict) -> dict:
         artifact = self.artifacts["symptom"]
+        pipeline = artifact.get("pipeline")
         model = artifact["model"]
-        vectorizer = artifact["vectorizer"]
         symptom_cols = artifact["symptom_columns"]
-        severity_map = artifact["severity_map"]
-        frequency_meta = artifact["frequency_meta"]
+        prediction_threshold = float(artifact.get("prediction_threshold", 0.35))
+        classes = artifact.get("classes", [])
+        multilabel_enabled = bool(artifact.get("multilabel", False))
 
         symptoms = payload.get("symptoms", []) or []
         row_data = {col: symptoms[idx] if idx < len(symptoms) else "" for idx, col in enumerate(symptom_cols)}
         symptom_frame = pd.DataFrame([row_data])
-        docs, _ = build_symptom_documents(
-            symptom_frame=symptom_frame,
-            symptom_columns=symptom_cols,
-            severity_map=severity_map,
-            frequency_meta=frequency_meta,
-            fit_frequency=False,
-        )
 
-        x = vectorizer.transform(docs)
-        pred = model.predict(x)[0]
-        proba = model.predict_proba(x)[0]
+        if pipeline is not None:
+            proba = np.asarray(pipeline.predict_proba(symptom_frame))[0]
+        else:
+            vectorizer = artifact["vectorizer"]
+            severity_map = artifact["severity_map"]
+            frequency_meta = artifact["frequency_meta"]
+            docs, _ = build_symptom_documents(
+                symptom_frame=symptom_frame,
+                symptom_columns=symptom_cols,
+                severity_map=severity_map,
+                frequency_meta=frequency_meta,
+                fit_frequency=False,
+            )
+            x = vectorizer.transform(docs)
+            proba = np.asarray(model.predict_proba(x))[0]
+
+        if multilabel_enabled and classes:
+            predicted_mask = (proba >= prediction_threshold).astype(int)
+            if int(predicted_mask.sum()) == 0:
+                predicted_mask[int(np.argmax(proba))] = 1
+
+            predicted_indices = np.where(predicted_mask == 1)[0].tolist()
+            predicted_labels = [str(classes[idx]) for idx in predicted_indices]
+            top_idx = int(np.argmax(proba))
+            primary_prediction = str(classes[top_idx])
+            confidence = float(proba[top_idx])
+            label_probabilities = {str(classes[i]): float(proba[i]) for i in range(len(classes))}
+            explanation = explain_symptom_prediction(artifact, symptoms, predicted_labels, top_n=6)
+
+            return {
+                "model": "symptom",
+                "prediction": primary_prediction,
+                "predicted_labels": predicted_labels,
+                "label_probabilities": label_probabilities,
+                "probability": confidence,
+                "explanation": explanation,
+            }
+
+        if pipeline is not None:
+            pred = pipeline.predict(symptom_frame)[0]
+        else:
+            pred = model.predict(x)[0]
         class_index = int(np.where(model.classes_ == pred)[0][0])
         confidence = float(proba[class_index])
-
         explanation = explain_symptom_prediction(artifact, symptoms, pred, top_n=6)
         return {
             "model": "symptom",
