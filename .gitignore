@@ -34,7 +34,8 @@ Thumbs.db
 artifacts/models/
 artifacts/encoders/
 artifacts/*.joblib
+!artifacts/models/
+!artifacts/models/*.joblib
 
 # Optional runtime outputs
 *.log
-
