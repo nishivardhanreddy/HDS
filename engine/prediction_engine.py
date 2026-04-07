@@ -171,7 +171,8 @@ class PredictionEngine:
         row = {feature: merged.get(feature, np.nan) for feature in input_features}
         input_df = pd.DataFrame([row])
 
-        x = selector.transform(preprocessor.transform(input_df))
+        x_prepared = self._safe_preprocessor_transform(preprocessor, input_df)
+        x = selector.transform(x_prepared)
         pred = int(model.predict(x)[0])
         proba = model.predict_proba(x)[0]
         confidence = float(proba[1]) if len(proba) > 1 else float(proba[0])
@@ -194,3 +195,40 @@ class PredictionEngine:
             "probability": confidence,
             "explanation": explanation,
         }
+
+    def _safe_preprocessor_transform(self, preprocessor, input_df: pd.DataFrame):
+        """
+        Handle sklearn artifact compatibility across versions.
+
+        Some deserialized SimpleImputer objects from older versions can miss
+        private attributes (for example `_fill_dtype`) expected by newer
+        runtimes. We repair those attributes lazily and retry once.
+        """
+        try:
+            return preprocessor.transform(input_df)
+        except AttributeError as exc:
+            if "_fill_dtype" not in str(exc):
+                raise
+            self._repair_imputer_private_attrs(preprocessor)
+            return preprocessor.transform(input_df)
+
+    def _repair_imputer_private_attrs(self, estimator) -> None:
+        if estimator is None or estimator in {"drop", "passthrough"}:
+            return
+
+        if estimator.__class__.__name__ == "SimpleImputer":
+            if not hasattr(estimator, "_fill_dtype"):
+                stats = getattr(estimator, "statistics_", None)
+                dtype = np.asarray(stats).dtype if stats is not None else np.dtype("float64")
+                estimator._fill_dtype = dtype
+            return
+
+        steps = getattr(estimator, "steps", None)
+        if steps is not None:
+            for _, step in steps:
+                self._repair_imputer_private_attrs(step)
+
+        transformers = getattr(estimator, "transformers_", None)
+        if transformers is not None:
+            for _, transformer, _ in transformers:
+                self._repair_imputer_private_attrs(transformer)
